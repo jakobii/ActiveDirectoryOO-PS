@@ -1,0 +1,1 @@
+The intent of this module is to make it easier to automate account creation in Active Diectory. this is just a lightwight wrapper arount the offical ActiveDirectory Powershell Module. it is being use in production to create user account. pull requests are welcomed.
