@@ -1,26 +1,14 @@
-[system.io.Fileinfo]$Module = Join-Path -Path $PSScriptRoot -ChildPath 'ad.psm1'
-Import-Module -verbose -Name $Module
+Import-Module "$PSScriptRoot\ActiveDirectoryOO.psm1"
+$ADConfig = Import-PowerShellDataFile "$PSScriptRoot\ad.secure.psd1"
 
-[system.io.Fileinfo]$ConfigPath = Join-Path -Path $PSScriptRoot -ChildPath 'test.psd1'
-$config = Import-PowerShellDataFile -Path $ConfigPath 
+$ADCredential = New-Credential -Username $ADConfig.Password -Password $ADConfig.Username
 
-$AD = New-ADConnection -Server $config.Server
-
-$AD | Out-Host
-
-Write-Host '------------------CREATING---------------------'
-$User = $AD.CreateUser('DeleteMe')
- 
-$User.QuickEnable(8)
-
-$User.SetEmployeeID(999999)
-$User.SetDescription('this is a test account the will be deleted instantly')
+$Connection = New-ADUserConnectionByIdentity -Server $ADConfig.Server  -Identity 'TestUser1' -Credential $ADCredential
 
 
-$User | Out-Host
+$Connection.ObjectGuid()
 
-Write-Host '------------------DELETING---------------------'
-$AD.DeleteUser($User)
+$Connection.GivenName()
 
-$User | Out-Host
+
 

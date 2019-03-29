@@ -1,4 +1,18 @@
+function New-Credential {
+    param(
+        [parameter(Mandatory = $true)]
+        [alias("u")]
+        [string]
+        $Username,
 
+        [parameter(Mandatory = $true)]
+        [alias("p")]
+        [string]
+        $Password
+    )
+    $SecureString = ConvertTo-SecureString $Password -AsPlainText -Force
+    return [System.Management.Automation.PSCredential]::new($Username, $SecureString)
+}
 function ConvertTo-Hashtable {
     param (
         [parameter(ValueFromPipeline, Mandatory)]
@@ -65,11 +79,35 @@ function ConvertTo-Hashtable {
 
 
 
-
+function New-ADDCConnection {
+    param(
+        [string]$Server,
+        [string]$Username,
+        [string]$Password
+    )
+    if ($Username -and $Password) {
+        return [ADDCConnection]::New($Server, $Username, $Password)
+    }
+    else {
+        return [ADDCConnection]::New($Server)
+    }
+}
 
 class ADDCConnection {
     [string]$Server
     [pscredential]$Credential
+
+    ADDCConnection([string]$Server) {
+        $this.Server = $Server
+    }
+    ADDCConnection([string]$Server, [pscredential]$Credential) {
+        $this.Server = $Server
+        $this.Credential = $Credential
+    }
+    ADDCConnection([string]$Server, [string]$Username, [string]$Password) {
+        $this.Server = $Server
+        $this.SetCredential($Username, $Password)
+    }
 
     [hashtable]AuthSplat() {
         $Auth = @{
@@ -100,14 +138,62 @@ class ADDCConnection {
         $Auth = $this.AuthSplat()
         Clear-ADAccountExpiration @Auth -Identity $ObjectGuid -Confirm:$False
     }
-    AddADPrincipalGroupMembership([guid]$ObjectGuid,[guid[]]$Groups){
+    AddADPrincipalGroupMembership([guid]$ObjectGuid, [guid[]]$Groups) {
         $Auth = $this.AuthSplat()
         Add-ADPrincipalGroupMembership @Auth -Identity $ObjectGuid -MemberOf $Groups
     }
+    RemoveADPrincipalGroupMembership([guid]$ObjectGuid, [guid[]]$Groups) {
+        $Auth = $this.AuthSplat()
+        Remove-ADPrincipalGroupMembership @Auth -Identity $ObjectGuid -MemberOf $Groups
+    }
+
+
+
+
+    [ADUserConnection] NewADUserConnectionByIdentity ( [String]$Identity ) {
+        $Auth = $this.AuthSplat()
+        $User = Get-Aduser @Auth -Identity $Identity
+        if (!$User) {return $null}
+        return [ADUserConnection]::new($this, $User.ObjectGuid)
+    }
+    [ADUserConnection[]] NewADUserConnectionsByFilter ([string]$Filter) {
+        $Auth = $this.AuthSplat()
+        [array]$Users = Get-Aduser @Auth -Filter $Filter
+        if (!$Users) {return $null}
+        $Connections = [System.Array]::CreateInstance([ADUserConnection], $Users.Count)
+        foreach ($ObjectGuid in $Users.ObjectGuid) {
+            $Connections += [ADUserConnection]::new($this, $ObjectGuid)
+        }
+        return $Connections
+    }
+}
+
+function New-ADUserConnectionsByFilter {
+    param (
+        [Parameter(Mandatory)]
+        [string]$Server,
+
+        [Parameter(Mandatory)]
+        [string]$Filter,
+
+        [pscredential]$Credential
+    )
+    return [ADDCConnection]::new($Server,$Credential).NewADUserConnectionsByFilter($Filter)
 }
 
 
+function New-ADUserConnectionByIdentity {
+    param (
+        [Parameter(Mandatory)]
+        [string]$Server,
 
+        [Parameter(Mandatory)]
+        [string]$Identity,
+
+        [pscredential]$Credential
+    )
+    return [ADDCConnection]::new($Server,$Credential).NewADUserConnectionByIdentity($Identity)
+}
 
 
 <#
@@ -120,7 +206,7 @@ class ADUserConnection {
 
     ADUserConnection([ADDCConnection]$DC, $ObjectGuid) {
         $this.DC = $DC
-        $this.ID = $this.ObjectGuid()
+        $this.ID = $ObjectGuid
     }
 
     
@@ -129,8 +215,8 @@ class ADUserConnection {
         [hashtable]$HT = ConvertTo-Hashtable $User -Include $Properties
         return $HT
     }
-    [psobject] Get([string]$Property) {
-        [hashtable]$results = $this.get(@($Property))
+    [psobject] GetOne([string]$Property) {
+        [hashtable]$results = $this.Get($Property)
         return $results[$Property]
     }
     Set([string]$Property, [psobject]$Value) {
@@ -198,107 +284,106 @@ class ADUserConnection {
     ############################################################################################
     
     [guid] ObjectGuid () {return $this.ID}
-    [string[]] MemberOf () { return $this.get('MemberOf')}
+    [string[]] MemberOf () { return $this.GetOne('MemberOf')}
 
-    [DateTime] AccountExpirationDate () { return $this.Get('AccountExpirationDate')}
-    [Boolean] AccountNotDelegated () { return $this.Get('AccountNotDelegated')}
-    [Boolean] AllowReversiblePasswordEncryption () { return $this.Get('AllowReversiblePasswordEncryption')}
-    [psobject] AuthenticationPolicy () { return $this.Get('AuthenticationPolicy')}
-    [psobject] AuthenticationPolicySilo () { return $this.Get('AuthenticationPolicySilo')}
-    [Boolean] CannotChangePassword () { return $this.Get('CannotChangePassword')}
-    [Hashtable] Certificates () { return $this.Get('Certificates')}
-    [Boolean] ChangePasswordAtLogon () { return $this.Get('ChangePasswordAtLogon')}
-    [string] City () { return $this.Get('City')}
-    [string] Company () { return $this.Get('Company')}
-    [bool] CompoundIdentitySupported () { return $this.Get('CompoundIdentitySupported')}
-    [string] Country () { return $this.Get('Country')}
-    [string] Department () { return $this.Get('Department')}
-    [string] Description () { return $this.Get('Description')}
-    [string] DisplayName () { return $this.Get('DisplayName')}
-    [string] Division () { return $this.Get('Division')}
-    [string] EmailAddress () { return $this.Get('EmailAddress')}
-    [string] EmployeeID () { return $this.Get('EmployeeID')}
-    [string] EmployeeNumber () { return $this.Get('EmployeeNumber')}
-    [bool] Enabled () { return $this.Get('Enabled')}
-    [string] Fax () { return $this.Get('Fax')}
-    [string] GivenName () { return $this.Get('GivenName')}
-    [string] HomeDirectory () { return $this.Get('HomeDirectory')}
-    [string] HomeDrive () { return $this.Get('HomeDrive')}
-    [string] HomePage () { return $this.Get('HomePage')}
-    [string] HomePhone () { return $this.Get('HomePhone')}
-    [string] Initials () { return $this.Get('Initials')}
-    [psobject] KerberosEncryptionType () { return $this.Get('KerberosEncryptionType')}
-    [string] LogonWorkstations () { return $this.Get('LogonWorkstations')}
-    [psobject] Manager () { return $this.Get('Manager')}
-    [string] MobilePhone () { return $this.Get('MobilePhone')}
-    [string] Office () { return $this.Get('Office')}
-    [string] OfficePhone () { return $this.Get('OfficePhone')}
-    [string] Organization () { return $this.Get('Organization')}
-    [string] OtherName () { return $this.Get('OtherName')}
-    [string] Partition () { return $this.Get('Partition')}
-    [bool] PasswordNeverExpires () { return $this.Get('PasswordNeverExpires')}
-    [bool] PasswordNotRequired () { return $this.Get('PasswordNotRequired')}
-    [string] POBox () { return $this.Get('POBox')}
-    [string] PostalCode () { return $this.Get('PostalCode')}
-    [psobject] PrincipalsAllowedToDelegateToAccount () { return $this.Get('PrincipalsAllowedToDelegateToAccount')}
-    [string] ProfilePath () { return $this.Get('ProfilePath')}
-    [string] SamAccountName () { return $this.Get('SamAccountName')}
-    [string] ScriptPath () { return $this.Get('ScriptPath')}
-    [hashtable] ServicePrincipalNames () { return $this.Get('ServicePrincipalNames')}
-    [bool] SmartcardLogonRequired () { return $this.Get('SmartcardLogonRequired')}
-    [string] State () { return $this.Get('State')}
-    [string] StreetAddress () { return $this.Get('StreetAddress')}
-    [string] Surname () { return $this.Get('Surname')}
-    [string] Title () { return $this.Get('Title')}
-    [bool] TrustedForDelegation () { return $this.Get('TrustedForDelegation')}
-    [string] UserPrincipalName () { return $this.Get('UserPrincipalName')}
+    [DateTime] AccountExpirationDate () { return $this.GetOne('AccountExpirationDate')}
+    [Boolean] AccountNotDelegated () { return $this.GetOne('AccountNotDelegated')}
+    [Boolean] AllowReversiblePasswordEncryption () { return $this.GetOne('AllowReversiblePasswordEncryption')}
+    [psobject] AuthenticationPolicy () { return $this.GetOne('AuthenticationPolicy')}
+    [psobject] AuthenticationPolicySilo () { return $this.GetOne('AuthenticationPolicySilo')}
+    [Boolean] CannotChangePassword () { return $this.GetOne('CannotChangePassword')}
+    [Hashtable] Certificates () { return $this.GetOne('Certificates')}
+    [Boolean] ChangePasswordAtLogon () { return $this.GetOne('ChangePasswordAtLogon')}
+    [string] City () { return $this.GetOne('City')}
+    [string] Company () { return $this.GetOne('Company')}
+    [bool] CompoundIdentitySupported () { return $this.GetOne('CompoundIdentitySupported')}
+    [string] Country () { return $this.GetOne('Country')}
+    [string] Department () { return $this.GetOne('Department')}
+    [string] Description () { return $this.GetOne('Description')}
+    [string] DisplayName () { return $this.GetOne('DisplayName')}
+    [string] Division () { return $this.GetOne('Division')}
+    [string] EmailAddress () { return $this.GetOne('EmailAddress')}
+    [string] EmployeeID () { return $this.GetOne('EmployeeID')}
+    [string] EmployeeNumber () { return $this.GetOne('EmployeeNumber')}
+    [bool] Enabled () { return $this.GetOne('Enabled')}
+    [string] Fax () { return $this.GetOne('Fax')}
+    [string] GivenName () { return $this.GetOne('GivenName')}
+    [string] HomeDirectory () { return $this.GetOne('HomeDirectory')}
+    [string] HomeDrive () { return $this.GetOne('HomeDrive')}
+    [string] HomePage () { return $this.GetOne('HomePage')}
+    [string] HomePhone () { return $this.GetOne('HomePhone')}
+    [string] Initials () { return $this.GetOne('Initials')}
+    [psobject] KerberosEncryptionType () { return $this.GetOne('KerberosEncryptionType')}
+    [string] LogonWorkstations () { return $this.GetOne('LogonWorkstations')}
+    [psobject] Manager () { return $this.GetOne('Manager')}
+    [string] MobilePhone () { return $this.GetOne('MobilePhone')}
+    [string] Office () { return $this.GetOne('Office')}
+    [string] OfficePhone () { return $this.GetOne('OfficePhone')}
+    [string] Organization () { return $this.GetOne('Organization')}
+    [string] OtherName () { return $this.GetOne('OtherName')}
+    [string] Partition () { return $this.GetOne('Partition')}
+    [bool] PasswordNeverExpires () { return $this.GetOne('PasswordNeverExpires')}
+    [bool] PasswordNotRequired () { return $this.GetOne('PasswordNotRequired')}
+    [string] POBox () { return $this.GetOne('POBox')}
+    [string] PostalCode () { return $this.GetOne('PostalCode')}
+    [psobject] PrincipalsAllowedToDelegateToAccount () { return $this.GetOne('PrincipalsAllowedToDelegateToAccount')}
+    [string] ProfilePath () { return $this.GetOne('ProfilePath')}
+    [string] SamAccountName () { return $this.GetOne('SamAccountName')}
+    [string] ScriptPath () { return $this.GetOne('ScriptPath')}
+    [hashtable] ServicePrincipalNames () { return $this.GetOne('ServicePrincipalNames')}
+    [bool] SmartcardLogonRequired () { return $this.GetOne('SmartcardLogonRequired')}
+    [string] State () { return $this.GetOne('State')}
+    [string] StreetAddress () { return $this.GetOne('StreetAddress')}
+    [string] Surname () { return $this.GetOne('Surname')}
+    [string] Title () { return $this.GetOne('Title')}
+    [bool] TrustedForDelegation () { return $this.GetOne('TrustedForDelegation')}
+    [string] UserPrincipalName () { return $this.GetOne('UserPrincipalName')}
     
     [Int64] accountExpires() {
-        return $this.Get('accountExpires')
+        return $this.GetOne('accountExpires')
     }
     
-    [nullable[datetime]]AccountLockoutTime() {return $this.Get('AccountLockoutTime')}
-    [int] BadLogonCount() {return $this.Get('BadLogonCount')}
-    [Int64] badPasswordTime() {return $this.Get('badPasswordTime')}
-    [Int32] badPwdCount() {return $this.Get('badPwdCount')}
-    [string] CanonicalName() {return $this.Get('CanonicalName')}
-    [string] CN() {return $this.Get('CN')}
-    [Int64] codePage() {return $this.Get('codePage')}
-    [Int32] countryCode() {return $this.Get('countryCode')}
-    [datetime] Created() {return $this.Get('Created')}
-    [datetime] createTimeStamp() {return $this.Get('createTimeStamp')}
-    [psobject] Deleted() {return $this.Get('Deleted')} #???
-    [string] DistinguishedName() {return $this.Get('DistinguishedName')}
-    [bool] DoesNotRequirePreAuth() {return $this.Get('DoesNotRequirePreAuth')}
-    [bool] HomedirRequired() {return $this.Get('HomedirRequired')}
-    [Int32] instanceType() {return $this.Get('instanceType')}
-    [psobject] isDeleted() {return $this.Get('isDeleted')} #???
-    [Nullable[datetime]] LastBadPasswordAttempt() {return $this.Get('LastBadPasswordAttempt')}
-    [psobject] LastKnownParent() {return $this.Get('LastKnownParent')} #???
-    [Int64] lastLogoff() {return $this.Get('lastLogoff')}
-    [Int64] lastLogon() {return $this.Get('lastLogon')} 
-    [Nullable[datetime]] LastLogonDate() {return $this.Get('LastLogonDate')} 
-    [bool] LockedOut() {return $this.Get('LockedOut')} 
-    [Int32] logonCount() {return $this.Get('logonCount')} 
-    [datetime] Modified() {return $this.Get('Modified')} 
-    [datetime] modifyTimeStamp() {return $this.Get('modifyTimeStamp')} 
-    [string] Name() {return $this.Get('Name')} 
-    [string] ObjectCategory() {return $this.Get('ObjectCategory')} 
-    [string] ObjectClass() {return $this.Get('ObjectClass')} 
-    [System.Security.Principal.SecurityIdentifier] objectSid() {return $this.Get('objectSid')} 
-    [bool] PasswordExpired() {return $this.Get('PasswordExpired')} 
-    [Nullable[datetime]] PasswordLastSet() {return $this.Get('PasswordLastSet')} 
-    [string] PrimaryGroup() {return $this.Get('PrimaryGroup')} 
-    [Int32] primaryGroupID() {return $this.Get('primaryGroupID')} 
-    [bool] ProtectedFromAccidentalDeletion() {return $this.Get('ProtectedFromAccidentalDeletion')} 
-    [Int64] pwdLastSet() {return $this.Get('pwdLastSet')}
-    [Int32] sAMAccountType() {return $this.Get('sAMAccountType')}
-    [System.Security.Principal.SecurityIdentifier] SID() {return $this.Get('SID')}
-    [psobject] SIDHistory() {return $this.Get('SIDHistory')} #???
-    [bool] TrustedToAuthForDelegation() {return $this.Get('TrustedToAuthForDelegation')}
-    [Int32] userAccountControl() {return $this.Get('userAccountControl')}
-    [psobject] userCertificate() {return $this.Get('userCertificate')}
-
+    [nullable[datetime]]AccountLockoutTime() {return $this.GetOne('AccountLockoutTime')}
+    [int] BadLogonCount() {return $this.GetOne('BadLogonCount')}
+    [Int64] badPasswordTime() {return $this.GetOne('badPasswordTime')}
+    [Int32] badPwdCount() {return $this.GetOne('badPwdCount')}
+    [string] CanonicalName() {return $this.GetOne('CanonicalName')}
+    [string] CN() {return $this.GetOne('CN')}
+    [Int64] codePage() {return $this.GetOne('codePage')}
+    [Int32] countryCode() {return $this.GetOne('countryCode')}
+    [datetime] Created() {return $this.GetOne('Created')}
+    [datetime] createTimeStamp() {return $this.GetOne('createTimeStamp')}
+    [psobject] Deleted() {return $this.GetOne('Deleted')} #???
+    [string] DistinguishedName() {return $this.GetOne('DistinguishedName')}
+    [bool] DoesNotRequirePreAuth() {return $this.GetOne('DoesNotRequirePreAuth')}
+    [bool] HomedirRequired() {return $this.GetOne('HomedirRequired')}
+    [Int32] instanceType() {return $this.GetOne('instanceType')}
+    [psobject] isDeleted() {return $this.GetOne('isDeleted')} #???
+    [Nullable[datetime]] LastBadPasswordAttempt() {return $this.GetOne('LastBadPasswordAttempt')}
+    [psobject] LastKnownParent() {return $this.GetOne('LastKnownParent')} #???
+    [Int64] lastLogoff() {return $this.GetOne('lastLogoff')}
+    [Int64] lastLogon() {return $this.GetOne('lastLogon')} 
+    [Nullable[datetime]] LastLogonDate() {return $this.GetOne('LastLogonDate')} 
+    [bool] LockedOut() {return $this.GetOne('LockedOut')} 
+    [Int32] logonCount() {return $this.GetOne('logonCount')} 
+    [datetime] Modified() {return $this.GetOne('Modified')} 
+    [datetime] modifyTimeStamp() {return $this.GetOne('modifyTimeStamp')} 
+    [string] Name() {return $this.GetOne('Name')} 
+    [string] ObjectCategory() {return $this.GetOne('ObjectCategory')} 
+    [string] ObjectClass() {return $this.GetOne('ObjectClass')} 
+    [System.Security.Principal.SecurityIdentifier] objectSid() {return $this.GetOne('objectSid')} 
+    [bool] PasswordExpired() {return $this.GetOne('PasswordExpired')} 
+    [Nullable[datetime]] PasswordLastSet() {return $this.GetOne('PasswordLastSet')} 
+    [string] PrimaryGroup() {return $this.GetOne('PrimaryGroup')} 
+    [Int32] primaryGroupID() {return $this.GetOne('primaryGroupID')} 
+    [bool] ProtectedFromAccidentalDeletion() {return $this.GetOne('ProtectedFromAccidentalDeletion')} 
+    [Int64] pwdLastSet() {return $this.GetOne('pwdLastSet')}
+    [Int32] sAMAccountType() {return $this.GetOne('sAMAccountType')}
+    [System.Security.Principal.SecurityIdentifier] SID() {return $this.GetOne('SID')}
+    [psobject] SIDHistory() {return $this.GetOne('SIDHistory')} #???
+    [bool] TrustedToAuthForDelegation() {return $this.GetOne('TrustedToAuthForDelegation')}
+    [Int32] userAccountControl() {return $this.GetOne('userAccountControl')}
+    [psobject] userCertificate() {return $this.GetOne('userCertificate')}
 
 
 
