@@ -26,7 +26,7 @@ function ConvertTo-Hashtable {
         foreach ($Column in $InputObject.Table.Columns) {
             $Value = $InputObject[$Column]
             $Key = $Column.ColumnName
-            if ($Include -and $Include -NotContains $Key) {
+            if ($Include -and $Include[0] -ne '*' -and $Include -NotContains $Key) {
                 continue
             }
             if ($Exclude -and $Exclude -Contains $Key) {
@@ -41,7 +41,7 @@ function ConvertTo-Hashtable {
     elseif ($InputObject -is [Hashtable]) {
         foreach ($Key in $InputObject.Keys) {
             $Value = $InputObject[$Key]
-            if ($Include -and $Include -NotContains $Key) {
+            if ($Include -and $Include[0] -ne '*' -and $Include -NotContains $Key) {
                 continue
             }
             if ($Exclude -and $Exclude -Contains $Key) {
@@ -63,7 +63,7 @@ function ConvertTo-Hashtable {
         foreach ($Key in $Keys) {
             
             # Filters
-            if ($Include -and $Include -NotContains $Key) {
+            if ($Include -and $Include[0] -ne '*' -and $Include -NotContains $Key) {
                 continue
             }
             if ($Exclude -and $Exclude -Contains $Key) {
@@ -76,6 +76,25 @@ function ConvertTo-Hashtable {
         return $OutputObject
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -122,13 +141,14 @@ class ADDCConnection {
         $Secure = ConvertTo-SecureString $Pass -AsPlainText -Force
         $this.Credential = [PSCredential]::new($User, $Secure)
     }
-    SetADUser([guid]$ObjectGuid, [hashtable]$Properties) {
+    SetADUserProperties([guid]$ObjectGuid, [hashtable]$Properties) {
         $Auth = $this.AuthSplat()
-        Set-Aduser @Auth @Properties
+        Set-Aduser @Auth -Identity $ObjectGuid @Properties 
     }
-    [psobject] GetADUser([guid]$ObjectGuid, [string[]]$Properties) {
+    [hashtable] GetADUserProperties([guid]$ObjectGuid, [string[]]$Properties) {
         $Auth = $this.AuthSplat()
-        return Get-Aduser @Auth -Identity $ObjectGuid -Properties $Properties
+        $User = Get-Aduser @Auth -Identity $ObjectGuid -Properties $Properties
+        return ConvertTo-Hashtable $User -Include $Properties
     }
     SetADUserPassword([guid]$ObjectGuid, [securestring]$Password) {
         $Auth = $this.AuthSplat()
@@ -140,15 +160,22 @@ class ADDCConnection {
     }
     AddADPrincipalGroupMembership([guid]$ObjectGuid, [guid[]]$Groups) {
         $Auth = $this.AuthSplat()
-        Add-ADPrincipalGroupMembership @Auth -Identity $ObjectGuid -MemberOf $Groups
+        Add-ADPrincipalGroupMembership @Auth -Identity $ObjectGuid -MemberOf $Groups -Confirm:$false
     }
     RemoveADPrincipalGroupMembership([guid]$ObjectGuid, [guid[]]$Groups) {
         $Auth = $this.AuthSplat()
-        Remove-ADPrincipalGroupMembership @Auth -Identity $ObjectGuid -MemberOf $Groups
+        Remove-ADPrincipalGroupMembership @Auth -Identity $ObjectGuid -MemberOf $Groups -Confirm:$false
     }
-
-
-
+    [hashtable] GetADGroupByIdentity([string]$Identity,[string[]]$Properties){
+        $Auth = $this.AuthSplat()
+        $Group = Get-ADGroup @Auth -Identity $Identity -Properties $Properties
+        return ConvertTo-Hashtable $Group 
+    }
+    [hashtable] GetADGroupProperties([guid]$ObjectGuid,[string[]]$Properties){
+        $Auth = $this.AuthSplat()
+        $Group = Get-ADGroup @Auth -Identity $ObjectGuid -Properties $Properties
+        return ConvertTo-Hashtable $Group -Include $Properties
+    }
 
     [ADUserConnection] NewADUserConnectionByIdentity ( [String]$Identity ) {
         $Auth = $this.AuthSplat()
@@ -167,6 +194,30 @@ class ADDCConnection {
         return $Connections
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 function New-ADUserConnectionsByFilter {
     param (
@@ -211,9 +262,7 @@ class ADUserConnection {
 
     
     [hashtable] Get([string[]]$Properties) {
-        $User = $this.DC.GetADUser($this.ID, $Properties)
-        [hashtable]$HT = ConvertTo-Hashtable $User -Include $Properties
-        return $HT
+        return $this.DC.GetADUserProperties($this.ID, $Properties)
     }
     [psobject] GetOne([string]$Property) {
         [hashtable]$results = $this.Get($Property)
@@ -237,13 +286,13 @@ class ADUserConnection {
             }
         }
         if ($HasSafeSets) {
-            $this.DC.SetADUser($SafeSets)
+            $this.DC.SetADUserProperties($SafeSets)
         }
     }
 
     # this will allow internal setters to skipping the unsafe checking
     set([ADUserProperty]$Property, $Value) {
-        $this.DC.SetADUser($this.ID, @{$Property = $Value})
+        $this.DC.SetADUserProperties($this.ID, @{$Property = $Value})
     }
 
     hidden [bool] IsSafeSettableProperty([string]$Property) {
@@ -274,7 +323,7 @@ class ADUserConnection {
             $CMD = @{Replace = @{$Property = $Value}}
         }
 
-        $this.DC.SetADUser($this.ID, $CMD)
+        $this.DC.SetADUserProperties($this.ID, $CMD)
     }
 
     
@@ -286,7 +335,7 @@ class ADUserConnection {
     [guid] ObjectGuid () {return $this.ID}
     [string[]] MemberOf () { return $this.GetOne('MemberOf')}
 
-    [DateTime] AccountExpirationDate () { return $this.GetOne('AccountExpirationDate')}
+    [nullable[DateTime]] AccountExpirationDate () { return $this.GetOne('AccountExpirationDate')}
     [Boolean] AccountNotDelegated () { return $this.GetOne('AccountNotDelegated')}
     [Boolean] AllowReversiblePasswordEncryption () { return $this.GetOne('AllowReversiblePasswordEncryption')}
     [psobject] AuthenticationPolicy () { return $this.GetOne('AuthenticationPolicy')}
@@ -399,10 +448,48 @@ class ADUserConnection {
         $SecurePassword = ConvertTo-SecureString -String $Password -AsPlainText -Force
         $this.DC.SetADUserPassword($this.id, $SecurePassword)
     }
-    MemberOf([string[]]$Values) {
-
+    MemberOf([guid[]]$NewMemberOf) {
+        $CurrentMemberOf = $this.MemberOfGuids()
+        [system.collections.Arraylist]$AddMemberOfs = @()
+        [system.collections.Arraylist]$RemoveMemberOfs = @()
+        
+        # find memberOf to add
+        foreach($Group in $NewMemberOf){
+            if($CurrentMemberOf -notcontains $Group){
+                $AddMemberOfs.Add($Group)
+            }
+        }
+        if($AddMemberOfs){
+            $this.DC.AddADPrincipalGroupMembership($this.ID,$AddMemberOfs)
+        }
+        
+        # find memberOf to remove
+        foreach($Group in $CurrentMemberOf){
+            if($NewMemberOf -notcontains $Group){
+                $RemoveMemberOfs.Add($Group)
+            }
+        }
+        if($RemoveMemberOfs){
+            $this.DC.RemoveADPrincipalGroupMembership($this.ID,$RemoveMemberOfs)
+        }
     }
-    
+    MemberOf([String[]]$NewMemberOfIdentities){
+        [guid[]]$NewMemberOf = @()
+        foreach($Group in $NewMemberOfIdentities){
+            [guid[]]$NewMemberOf += $this.dc.GetADGroupByIdentity($Group,'ObjectGuid').ObjectGuid
+        }
+        $this.MemberOf($NewMemberOf)
+    }
+
+    [guid[]] MemberOfGuids(){
+        $CurrentMemberOf = $this.MemberOf()
+        [guid[]] $CurrentMemberOfGuids = @()
+        foreach($Group in $CurrentMemberOf){
+            [guid[]] $CurrentMemberOfGuids += $this.DC.GetADGroupByIdentity($Group,'ObjectGuid').ObjectGuid
+        }
+        return $CurrentMemberOfGuids 
+    }
+
     # AccountExpirationDate can be set by explicitly passing a datetime
     # AccountExpirationDate can be cleared implicity by passing a null
     AccountExpirationDate ([nullable[DateTime]]$Value) { 
