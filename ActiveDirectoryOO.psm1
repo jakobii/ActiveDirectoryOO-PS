@@ -141,49 +141,29 @@ class ADDCConnection {
         $Secure = ConvertTo-SecureString $Pass -AsPlainText -Force
         $this.Credential = [PSCredential]::new($User, $Secure)
     }
-    SetADUserProperties([guid]$ObjectGuid, [hashtable]$Properties) {
+    [hashtable] OrganizationalUnit([string]$Identity,[string[]]$Properties){
         $Auth = $this.AuthSplat()
-        Set-Aduser @Auth -Identity $ObjectGuid @Properties 
+        $ou = Get-ADRrganizationalUnit @Auth -Identity $Identity -Properties $Properties
+        return ConvertTo-Hashtable $ou -Include $Properties
     }
-    [hashtable] GetADUserProperties([guid]$ObjectGuid, [string[]]$Properties) {
-        $Auth = $this.AuthSplat()
-        $User = Get-Aduser @Auth -Identity $ObjectGuid -Properties $Properties
-        return ConvertTo-Hashtable $User -Include $Properties
-    }
-    SetADUserPassword([guid]$ObjectGuid, [securestring]$Password) {
-        $Auth = $this.AuthSplat()
-        Set-ADAccountPassword @Auth -Identity $ObjectGuid -Reset -Confirm:$False -NewPassword $Password
-    }
-    ClearADAccountExpiration([guid]$ObjectGuid) {
-        $Auth = $this.AuthSplat()
-        Clear-ADAccountExpiration @Auth -Identity $ObjectGuid -Confirm:$False
-    }
-    AddADPrincipalGroupMembership([guid]$ObjectGuid, [guid[]]$Groups) {
-        $Auth = $this.AuthSplat()
-        Add-ADPrincipalGroupMembership @Auth -Identity $ObjectGuid -MemberOf $Groups -Confirm:$false
-    }
-    RemoveADPrincipalGroupMembership([guid]$ObjectGuid, [guid[]]$Groups) {
-        $Auth = $this.AuthSplat()
-        Remove-ADPrincipalGroupMembership @Auth -Identity $ObjectGuid -MemberOf $Groups -Confirm:$false
-    }
-    [hashtable] GetADGroupByIdentity([string]$Identity,[string[]]$Properties){
+    [hashtable] Group([string]$Identity,[string[]]$Properties){
         $Auth = $this.AuthSplat()
         $Group = Get-ADGroup @Auth -Identity $Identity -Properties $Properties
         return ConvertTo-Hashtable $Group 
     }
-    [hashtable] GetADGroupProperties([guid]$ObjectGuid,[string[]]$Properties){
+    [hashtable] Group([guid]$ObjectGuid,[string[]]$Properties){
         $Auth = $this.AuthSplat()
         $Group = Get-ADGroup @Auth -Identity $ObjectGuid -Properties $Properties
         return ConvertTo-Hashtable $Group -Include $Properties
     }
 
-    [ADUserConnection] NewADUserConnectionByIdentity ( [String]$Identity ) {
+    [ADUserConnection] NewADUserConnection ( [String]$Identity ) {
         $Auth = $this.AuthSplat()
         $User = Get-Aduser @Auth -Identity $Identity
         if (!$User) {return $null}
         return [ADUserConnection]::new($this, $User.ObjectGuid)
     }
-    [ADUserConnection[]] NewADUserConnectionsByFilter ([string]$Filter) {
+    [ADUserConnection[]] NewADUserConnections ([string]$Filter) {
         $Auth = $this.AuthSplat()
         [array]$Users = Get-Aduser @Auth -Filter $Filter
         if (!$Users) {return $null}
@@ -219,7 +199,7 @@ class ADDCConnection {
 
 
 
-function New-ADUserConnectionsByFilter {
+function New-ADUserConnections {
     param (
         [Parameter(Mandatory)]
         [string]$Server,
@@ -229,11 +209,11 @@ function New-ADUserConnectionsByFilter {
 
         [pscredential]$Credential
     )
-    return [ADDCConnection]::new($Server,$Credential).NewADUserConnectionsByFilter($Filter)
+    return [ADDCConnection]::new($Server,$Credential).NewADUserConnections($Filter)
 }
 
 
-function New-ADUserConnectionByIdentity {
+function New-ADUserConnection {
     param (
         [Parameter(Mandatory)]
         [string]$Server,
@@ -243,12 +223,13 @@ function New-ADUserConnectionByIdentity {
 
         [pscredential]$Credential
     )
-    return [ADDCConnection]::new($Server,$Credential).NewADUserConnectionByIdentity($Identity)
+    return [ADDCConnection]::new($Server,$Credential).NewADUserConnection($Identity)
 }
 
 
 <#
     represents an existing ADUser in Active Ditectory
+    used to getting and setting properties on a user
 #>
 class ADUserConnection {
     hidden [guid]$ID
@@ -259,73 +240,89 @@ class ADUserConnection {
         $this.DC = $DC
         $this.ID = $ObjectGuid
     }
-
+    [string] ToString(){
+        return $this.ID.ToString()
+    }
     
     [hashtable] Get([string[]]$Properties) {
-        return $this.DC.GetADUserProperties($this.ID, $Properties)
+        $Auth = $this.DC.AuthSplat()
+        $User = Get-Aduser @Auth -Identity $this.ObjectGuid() -Properties $Properties
+        return ConvertTo-Hashtable $User -Include $Properties
     }
-    [psobject] GetOne([string]$Property) {
-        [hashtable]$results = $this.Get($Property)
+    [psobject] Get([string]$Property) {
+        [string[]]$Properties = @($Property)
+        [hashtable]$results = $this.Get($Properties)
         return $results[$Property]
     }
+    # this will allow internal setters to skip the unsafe checking
+    set([ADUserProperty]$Property, [psobject]$Value) {
+        $CMD = @{$Property = $Value}
+        $Auth = $this.DC.AuthSplat()
+        Set-Aduser @Auth -Identity $this.ObjectGuid() @CMD 
+    }
+
     Set([string]$Property, [psobject]$Value) {
         $this.set(@{$Property = $Value})
     }
     Set([hashtable]$Properties) {
         $SafeSets = @{}
         $HasSafeSets = $false
+        $SafeSettableProperties = $this.SafeSettableProperties()
         foreach ($Key in $Properties.Keys) {
             $Value = $Properties[$Key]
-            if ($this.IsSafeSettableProperty($Key)) {
-                $SafeSets.Add($Key, $Value)
-                $HasSafeSets = $true
+            
+            # Method Properties
+            if ($Key -eq 'AccountPassword') {
+                $this.AccountPassword($Value)
             }
-            # perform unsafe sets first, and one at a time.
+            elseif ($Key -eq 'OrganizationalUnit') {
+                $this.OrganizationalUnit($Value)
+            }
+            elseif ($Key -eq 'Groups') {
+                $this.Groups($Value)
+            }
+        
+            # is safe property
+            elseif ($SafeSettableProperties -contains $Key) {
+                    $SafeSets.Add($Key, $Value)
+                    $HasSafeSets = $true
+            }
+
+            # perform unsafe sets one at a time.
             elseif ($this.AllowUnsafeSets) {
                 $this.UnsafeSet($Key, $Value)
             }
         }
+        # perform safe sets all at once
         if ($HasSafeSets) {
-            $this.DC.SetADUserProperties($SafeSets)
+            $Auth = $this.DC.AuthSplat()
+            Set-Aduser @Auth -Identity $this.ObjectGuid() @SafeSets 
         }
     }
-
-    # this will allow internal setters to skipping the unsafe checking
-    set([ADUserProperty]$Property, $Value) {
-        $this.DC.SetADUserProperties($this.ID, @{$Property = $Value})
+    hidden [string[]] SafeSettableProperties([string]$Property) {
+        return [ADUserProperty].GetFields().Name | Where-Object {$psitem -ne 'value__'} 
     }
 
-    hidden [bool] IsSafeSettableProperty([string]$Property) {
-        $Properties = [ADUserProperty].GetFields().Name | Where-Object {$psitem -ne 'value__'} 
-        if ( $Properties -contains $Property) {
-            return $true
-        }
-        return $false
-    }
 
-    # to be used on domain specific aduser properties 
+    # set non-standard property. 
+    # this is unsafe becuase we know nothing about the property.
     hidden UnsafeSet([string]$Property, $Value) {
         $CMD = @{}
 
-        # Custom Property
-        if ($Property -eq 'AccountPassword') {
-            if ($Value -isnot [SecureString]) {
-                $Value = ConvertTo-SecureString -String $Value -AsPlainText -Force
-            } 
-            $this.DC.SetADUserPassword($this.id, $Value)
-        }
         # Null
         elseif ($Value -is [dbnull] -or $null -eq $Value) {
             $CMD = @{Clear = @($Property)}
         }
-        # default. allow enduser to make decision
+        # default
         else {
             $CMD = @{Replace = @{$Property = $Value}}
         }
 
-        $this.DC.SetADUserProperties($this.ID, $CMD)
+        $Auth = $this.DC.AuthSplat()
+        Set-Aduser @Auth -Identity $this.ObjectGuid() @CMD 
     }
 
+    
     
     
     
@@ -333,122 +330,147 @@ class ADUserConnection {
     ############################################################################################
     
     [guid] ObjectGuid () {return $this.ID}
-    [string[]] MemberOf () { return $this.GetOne('MemberOf')}
+    [string[]] MemberOf () { return $this.Get('MemberOf')}
 
-    [nullable[DateTime]] AccountExpirationDate () { return $this.GetOne('AccountExpirationDate')}
-    [Boolean] AccountNotDelegated () { return $this.GetOne('AccountNotDelegated')}
-    [Boolean] AllowReversiblePasswordEncryption () { return $this.GetOne('AllowReversiblePasswordEncryption')}
-    [psobject] AuthenticationPolicy () { return $this.GetOne('AuthenticationPolicy')}
-    [psobject] AuthenticationPolicySilo () { return $this.GetOne('AuthenticationPolicySilo')}
-    [Boolean] CannotChangePassword () { return $this.GetOne('CannotChangePassword')}
-    [Hashtable] Certificates () { return $this.GetOne('Certificates')}
-    [Boolean] ChangePasswordAtLogon () { return $this.GetOne('ChangePasswordAtLogon')}
-    [string] City () { return $this.GetOne('City')}
-    [string] Company () { return $this.GetOne('Company')}
-    [bool] CompoundIdentitySupported () { return $this.GetOne('CompoundIdentitySupported')}
-    [string] Country () { return $this.GetOne('Country')}
-    [string] Department () { return $this.GetOne('Department')}
-    [string] Description () { return $this.GetOne('Description')}
-    [string] DisplayName () { return $this.GetOne('DisplayName')}
-    [string] Division () { return $this.GetOne('Division')}
-    [string] EmailAddress () { return $this.GetOne('EmailAddress')}
-    [string] EmployeeID () { return $this.GetOne('EmployeeID')}
-    [string] EmployeeNumber () { return $this.GetOne('EmployeeNumber')}
-    [bool] Enabled () { return $this.GetOne('Enabled')}
-    [string] Fax () { return $this.GetOne('Fax')}
-    [string] GivenName () { return $this.GetOne('GivenName')}
-    [string] HomeDirectory () { return $this.GetOne('HomeDirectory')}
-    [string] HomeDrive () { return $this.GetOne('HomeDrive')}
-    [string] HomePage () { return $this.GetOne('HomePage')}
-    [string] HomePhone () { return $this.GetOne('HomePhone')}
-    [string] Initials () { return $this.GetOne('Initials')}
-    [psobject] KerberosEncryptionType () { return $this.GetOne('KerberosEncryptionType')}
-    [string] LogonWorkstations () { return $this.GetOne('LogonWorkstations')}
-    [psobject] Manager () { return $this.GetOne('Manager')}
-    [string] MobilePhone () { return $this.GetOne('MobilePhone')}
-    [string] Office () { return $this.GetOne('Office')}
-    [string] OfficePhone () { return $this.GetOne('OfficePhone')}
-    [string] Organization () { return $this.GetOne('Organization')}
-    [string] OtherName () { return $this.GetOne('OtherName')}
-    [string] Partition () { return $this.GetOne('Partition')}
-    [bool] PasswordNeverExpires () { return $this.GetOne('PasswordNeverExpires')}
-    [bool] PasswordNotRequired () { return $this.GetOne('PasswordNotRequired')}
-    [string] POBox () { return $this.GetOne('POBox')}
-    [string] PostalCode () { return $this.GetOne('PostalCode')}
-    [psobject] PrincipalsAllowedToDelegateToAccount () { return $this.GetOne('PrincipalsAllowedToDelegateToAccount')}
-    [string] ProfilePath () { return $this.GetOne('ProfilePath')}
-    [string] SamAccountName () { return $this.GetOne('SamAccountName')}
-    [string] ScriptPath () { return $this.GetOne('ScriptPath')}
-    [hashtable] ServicePrincipalNames () { return $this.GetOne('ServicePrincipalNames')}
-    [bool] SmartcardLogonRequired () { return $this.GetOne('SmartcardLogonRequired')}
-    [string] State () { return $this.GetOne('State')}
-    [string] StreetAddress () { return $this.GetOne('StreetAddress')}
-    [string] Surname () { return $this.GetOne('Surname')}
-    [string] Title () { return $this.GetOne('Title')}
-    [bool] TrustedForDelegation () { return $this.GetOne('TrustedForDelegation')}
-    [string] UserPrincipalName () { return $this.GetOne('UserPrincipalName')}
+    # better version of MemberOf()
+    [hashtable[]] Groups(){
+        $CurrentMemberOf = $this.MemberOf()
+        [hashtable[]]$CurrentGroups = @()
+        foreach($Group in $CurrentMemberOf){
+            [hashtable[]]$CurrentGroups += $this.DC.Group($Group,@('ObjectGuid','SamAccountName','DistinguishedName','Created','ObjectClass'))
+        }
+        return $CurrentGroups
+    }
+
+    [hashtable] OrganizationalUnit(){
+        $dn = $this.DistinguishedName() -split ','
+        $li = $dn.Count -1
+        $ou = $dn[1..$li] -join ','
+        return $this.DC.OrganizationalUnit($ou,@('ObjectGuid','DistinguishedName','Created','ObjectClass'))
+    }
+
+
+    [nullable[DateTime]] AccountExpirationDate () { return $this.Get('AccountExpirationDate')}
+    [Boolean] AccountNotDelegated () { return $this.Get('AccountNotDelegated')}
+    [Boolean] AllowReversiblePasswordEncryption () { return $this.Get('AllowReversiblePasswordEncryption')}
+    [psobject] AuthenticationPolicy () { return $this.Get('AuthenticationPolicy')}
+    [psobject] AuthenticationPolicySilo () { return $this.Get('AuthenticationPolicySilo')}
+    [Boolean] CannotChangePassword () { return $this.Get('CannotChangePassword')}
+    [Hashtable] Certificates () { return $this.Get('Certificates')}
+    [Boolean] ChangePasswordAtLogon () { return $this.Get('ChangePasswordAtLogon')}
+    [string] City () { return $this.Get('City')}
+    [string] Company () { return $this.Get('Company')}
+    [bool] CompoundIdentitySupported () { return $this.Get('CompoundIdentitySupported')}
+    [string] Country () { return $this.Get('Country')}
+    [string] Department () { return $this.Get('Department')}
+    [string] Description () { return $this.Get('Description')}
+    [string] DisplayName () { return $this.Get('DisplayName')}
+    [string] Division () { return $this.Get('Division')}
+    [string] EmailAddress () { return $this.Get('EmailAddress')}
+    [string] EmployeeID () { return $this.Get('EmployeeID')}
+    [string] EmployeeNumber () { return $this.Get('EmployeeNumber')}
+    [bool] Enabled () { return $this.Get('Enabled')}
+    [string] Fax () { return $this.Get('Fax')}
+    [string] GivenName () { return $this.Get('GivenName')}
+    [string] HomeDirectory () { return $this.Get('HomeDirectory')}
+    [string] HomeDrive () { return $this.Get('HomeDrive')}
+    [string] HomePage () { return $this.Get('HomePage')}
+    [string] HomePhone () { return $this.Get('HomePhone')}
+    [string] Initials () { return $this.Get('Initials')}
+    [psobject] KerberosEncryptionType () { return $this.Get('KerberosEncryptionType')}
+    [string] LogonWorkstations () { return $this.Get('LogonWorkstations')}
+    [psobject] Manager () { return $this.Get('Manager')}
+    [string] MobilePhone () { return $this.Get('MobilePhone')}
+    [string] Office () { return $this.Get('Office')}
+    [string] OfficePhone () { return $this.Get('OfficePhone')}
+    [string] Organization () { return $this.Get('Organization')}
+    [string] OtherName () { return $this.Get('OtherName')}
+    [string] Partition () { return $this.Get('Partition')}
+    [bool] PasswordNeverExpires () { return $this.Get('PasswordNeverExpires')}
+    [bool] PasswordNotRequired () { return $this.Get('PasswordNotRequired')}
+    [string] POBox () { return $this.Get('POBox')}
+    [string] PostalCode () { return $this.Get('PostalCode')}
+    [psobject] PrincipalsAllowedToDelegateToAccount () { return $this.Get('PrincipalsAllowedToDelegateToAccount')}
+    [string] ProfilePath () { return $this.Get('ProfilePath')}
+    [string] SamAccountName () { return $this.Get('SamAccountName')}
+    [string] ScriptPath () { return $this.Get('ScriptPath')}
+    [hashtable] ServicePrincipalNames () { return $this.Get('ServicePrincipalNames')}
+    [bool] SmartcardLogonRequired () { return $this.Get('SmartcardLogonRequired')}
+    [string] State () { return $this.Get('State')}
+    [string] StreetAddress () { return $this.Get('StreetAddress')}
+    [string] Surname () { return $this.Get('Surname')}
+    [string] Title () { return $this.Get('Title')}
+    [bool] TrustedForDelegation () { return $this.Get('TrustedForDelegation')}
+    [string] UserPrincipalName () { return $this.Get('UserPrincipalName')}
     
     [Int64] accountExpires() {
-        return $this.GetOne('accountExpires')
+        return $this.Get('accountExpires')
     }
     
-    [nullable[datetime]]AccountLockoutTime() {return $this.GetOne('AccountLockoutTime')}
-    [int] BadLogonCount() {return $this.GetOne('BadLogonCount')}
-    [Int64] badPasswordTime() {return $this.GetOne('badPasswordTime')}
-    [Int32] badPwdCount() {return $this.GetOne('badPwdCount')}
-    [string] CanonicalName() {return $this.GetOne('CanonicalName')}
-    [string] CN() {return $this.GetOne('CN')}
-    [Int64] codePage() {return $this.GetOne('codePage')}
-    [Int32] countryCode() {return $this.GetOne('countryCode')}
-    [datetime] Created() {return $this.GetOne('Created')}
-    [datetime] createTimeStamp() {return $this.GetOne('createTimeStamp')}
-    [psobject] Deleted() {return $this.GetOne('Deleted')} #???
-    [string] DistinguishedName() {return $this.GetOne('DistinguishedName')}
-    [bool] DoesNotRequirePreAuth() {return $this.GetOne('DoesNotRequirePreAuth')}
-    [bool] HomedirRequired() {return $this.GetOne('HomedirRequired')}
-    [Int32] instanceType() {return $this.GetOne('instanceType')}
-    [psobject] isDeleted() {return $this.GetOne('isDeleted')} #???
-    [Nullable[datetime]] LastBadPasswordAttempt() {return $this.GetOne('LastBadPasswordAttempt')}
-    [psobject] LastKnownParent() {return $this.GetOne('LastKnownParent')} #???
-    [Int64] lastLogoff() {return $this.GetOne('lastLogoff')}
-    [Int64] lastLogon() {return $this.GetOne('lastLogon')} 
-    [Nullable[datetime]] LastLogonDate() {return $this.GetOne('LastLogonDate')} 
-    [bool] LockedOut() {return $this.GetOne('LockedOut')} 
-    [Int32] logonCount() {return $this.GetOne('logonCount')} 
-    [datetime] Modified() {return $this.GetOne('Modified')} 
-    [datetime] modifyTimeStamp() {return $this.GetOne('modifyTimeStamp')} 
-    [string] Name() {return $this.GetOne('Name')} 
-    [string] ObjectCategory() {return $this.GetOne('ObjectCategory')} 
-    [string] ObjectClass() {return $this.GetOne('ObjectClass')} 
-    [System.Security.Principal.SecurityIdentifier] objectSid() {return $this.GetOne('objectSid')} 
-    [bool] PasswordExpired() {return $this.GetOne('PasswordExpired')} 
-    [Nullable[datetime]] PasswordLastSet() {return $this.GetOne('PasswordLastSet')} 
-    [string] PrimaryGroup() {return $this.GetOne('PrimaryGroup')} 
-    [Int32] primaryGroupID() {return $this.GetOne('primaryGroupID')} 
-    [bool] ProtectedFromAccidentalDeletion() {return $this.GetOne('ProtectedFromAccidentalDeletion')} 
-    [Int64] pwdLastSet() {return $this.GetOne('pwdLastSet')}
-    [Int32] sAMAccountType() {return $this.GetOne('sAMAccountType')}
-    [System.Security.Principal.SecurityIdentifier] SID() {return $this.GetOne('SID')}
-    [psobject] SIDHistory() {return $this.GetOne('SIDHistory')} #???
-    [bool] TrustedToAuthForDelegation() {return $this.GetOne('TrustedToAuthForDelegation')}
-    [Int32] userAccountControl() {return $this.GetOne('userAccountControl')}
-    [psobject] userCertificate() {return $this.GetOne('userCertificate')}
+    [nullable[datetime]]AccountLockoutTime() {return $this.Get('AccountLockoutTime')}
+    [int] BadLogonCount() {return $this.Get('BadLogonCount')}
+    [Int64] badPasswordTime() {return $this.Get('badPasswordTime')}
+    [Int32] badPwdCount() {return $this.Get('badPwdCount')}
+    [string] CanonicalName() {return $this.Get('CanonicalName')}
+    [string] CN() {return $this.Get('CN')}
+    [Int64] codePage() {return $this.Get('codePage')}
+    [Int32] countryCode() {return $this.Get('countryCode')}
+    [datetime] Created() {return $this.Get('Created')}
+    [datetime] createTimeStamp() {return $this.Get('createTimeStamp')}
+    [psobject] Deleted() {return $this.Get('Deleted')} #???
+    [string] DistinguishedName() {return $this.Get('DistinguishedName')}
+    [bool] DoesNotRequirePreAuth() {return $this.Get('DoesNotRequirePreAuth')}
+    [bool] HomedirRequired() {return $this.Get('HomedirRequired')}
+    [Int32] instanceType() {return $this.Get('instanceType')}
+    [psobject] isDeleted() {return $this.Get('isDeleted')} #???
+    [Nullable[datetime]] LastBadPasswordAttempt() {return $this.Get('LastBadPasswordAttempt')}
+    [psobject] LastKnownParent() {return $this.Get('LastKnownParent')} #???
+    [Int64] lastLogoff() {return $this.Get('lastLogoff')}
+    [Int64] lastLogon() {return $this.Get('lastLogon')} 
+    [Nullable[datetime]] LastLogonDate() {return $this.Get('LastLogonDate')} 
+    [bool] LockedOut() {return $this.Get('LockedOut')} 
+    [Int32] logonCount() {return $this.Get('logonCount')} 
+    [datetime] Modified() {return $this.Get('Modified')} 
+    [datetime] modifyTimeStamp() {return $this.Get('modifyTimeStamp')} 
+    [string] Name() {return $this.Get('Name')} 
+    [string] ObjectCategory() {return $this.Get('ObjectCategory')} 
+    [string] ObjectClass() {return $this.Get('ObjectClass')} 
+    [System.Security.Principal.SecurityIdentifier] objectSid() {return $this.Get('objectSid')} 
+    [bool] PasswordExpired() {return $this.Get('PasswordExpired')} 
+    [Nullable[datetime]] PasswordLastSet() {return $this.Get('PasswordLastSet')} 
+    [string] PrimaryGroup() {return $this.Get('PrimaryGroup')} 
+    [Int32] primaryGroupID() {return $this.Get('primaryGroupID')} 
+    [bool] ProtectedFromAccidentalDeletion() {return $this.Get('ProtectedFromAccidentalDeletion')} 
+    [Int64] pwdLastSet() {return $this.Get('pwdLastSet')}
+    [Int32] sAMAccountType() {return $this.Get('sAMAccountType')}
+    [System.Security.Principal.SecurityIdentifier] SID() {return $this.Get('SID')}
+    [psobject] SIDHistory() {return $this.Get('SIDHistory')} #???
+    [bool] TrustedToAuthForDelegation() {return $this.Get('TrustedToAuthForDelegation')}
+    [Int32] userAccountControl() {return $this.Get('userAccountControl')}
+    [psobject] userCertificate() {return $this.Get('userCertificate')}
 
 
 
     ##################################### Property Setters #####################################
     ############################################################################################
-
-    # AccountPassword accepts securestring for the security freaks
     AccountPassword([securestring]$Password) {
-        $this.DC.SetADUserPassword($this.id, $Password)
+        $Auth = $this.DC.AuthSplat()
+        Set-ADAccountPassword @Auth -Identity $this.ObjectGuid() -Reset -Confirm:$False -NewPassword $Password
     }
-    # AccountPassword accepts a string and secures it for you
     AccountPassword([string]$Password) {
         $SecurePassword = ConvertTo-SecureString -String $Password -AsPlainText -Force
-        $this.DC.SetADUserPassword($this.id, $SecurePassword)
+        $this.AccountPassword($SecurePassword)
     }
-    MemberOf([guid[]]$NewMemberOf) {
+    Groups([String[]]$NewMemberOfIdentities){
+        [guid[]]$NewMemberOf = @()
+        $Auth = $this.DC.AuthSplat()
+        foreach($Group in $NewMemberOfIdentities){
+            $Group = Get-ADGroup @Auth -Identity $this.ObjectGuid()
+            [guid[]]$NewMemberOf += $Group.ObjectGuid
+        }
+        $this.MemberOf($NewMemberOf)
+    }
+    Groups([guid[]]$NewMemberOf) {
         $CurrentMemberOf = $this.MemberOfGuids()
         [system.collections.Arraylist]$AddMemberOfs = @()
         [system.collections.Arraylist]$RemoveMemberOfs = @()
@@ -460,41 +482,38 @@ class ADUserConnection {
             }
         }
         if($AddMemberOfs){
-            $this.DC.AddADPrincipalGroupMembership($this.ID,$AddMemberOfs)
+            $this.JoinGroups($AddMemberOfs)
         }
         
         # find memberOf to remove
         foreach($Group in $CurrentMemberOf){
             if($NewMemberOf -notcontains $Group){
-                $RemoveMemberOfs.Add($Group)
             }
         }
         if($RemoveMemberOfs){
-            $this.DC.RemoveADPrincipalGroupMembership($this.ID,$RemoveMemberOfs)
+            $this.LeaveGroups($RemoveMemberOfs)
         }
     }
-    MemberOf([String[]]$NewMemberOfIdentities){
-        [guid[]]$NewMemberOf = @()
-        foreach($Group in $NewMemberOfIdentities){
-            [guid[]]$NewMemberOf += $this.dc.GetADGroupByIdentity($Group,'ObjectGuid').ObjectGuid
-        }
-        $this.MemberOf($NewMemberOf)
+    JoinGroups([guid[]]$Groups){
+        $Auth = $this.DC.AuthSplat()
+        Add-ADPrincipalGroupMembership @Auth -Identity $this.ObjectGuid() -MemberOf $Groups -Confirm:$false
+    }
+    LeaveGroups([guid[]]$Groups){
+        $Auth = $this.DC.AuthSplat()
+        Remove-ADPrincipalGroupMembership @Auth -Identity $this.ObjectGuid -MemberOf $Groups -Confirm:$false
     }
 
-    [guid[]] MemberOfGuids(){
-        $CurrentMemberOf = $this.MemberOf()
-        [guid[]] $CurrentMemberOfGuids = @()
-        foreach($Group in $CurrentMemberOf){
-            [guid[]] $CurrentMemberOfGuids += $this.DC.GetADGroupByIdentity($Group,'ObjectGuid').ObjectGuid
-        }
-        return $CurrentMemberOfGuids 
+    OrganizationalUnit([string]$Identity){
+        $Auth = $this.DC.AuthSplat()
+        $DN = $this.dc.OrganizationalUnit($Identity).DistinguishedName
+        Move-ADObject @Auth -Identity $this.ObjectGuid() -TargetPath $DN -Confirm:$False
     }
 
     # AccountExpirationDate can be set by explicitly passing a datetime
     # AccountExpirationDate can be cleared implicity by passing a null
     AccountExpirationDate ([nullable[DateTime]]$Value) { 
         if ($null -eq $Value) {
-            $this.DB.ClearADAccountExpiration($this.ID)
+            $this.ClearADAccountExpiration()
         }
         $this.Set([ADUserProperty]::AccountExpirationDate , $Value) 
     }
@@ -503,13 +522,18 @@ class ADUserConnection {
     # AccountExpirationDate can be set implicity by passing a true boolean
     AccountExpirationDate ([bool]$Expiration) {
         if (!$Expiration) {
-            $this.DB.ClearADAccountExpiration($this.ID)
+            $this.ClearADAccountExpiration()
         }
         else {
             $dt = Get-Date
             $this.AccountExpirationDate($dt)
         }
     }
+    ClearADAccountExpiration(){
+        $Auth = $this.DC.AuthSplat()
+        Clear-ADAccountExpiration @Auth -Identity $this.ObjectGuid() -Confirm:$False
+    }
+    
 
     AccountNotDelegated ([Boolean]$Value) { $this.Set([ADUserProperty]::AccountNotDelegated , $Value) }
     AllowReversiblePasswordEncryption ([Boolean]$Value) { $this.Set([ADUserProperty]::AllowReversiblePasswordEncryption , $Value) }
@@ -619,3 +643,5 @@ enum ADUserProperty {
     TrustedForDelegation
     UserPrincipalName
 }
+
+
