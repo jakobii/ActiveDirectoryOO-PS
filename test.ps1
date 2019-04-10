@@ -12,7 +12,7 @@ $ADCredential = New-Credential -Username $ADConfig.Username -Password $ADConfig.
 
 # Create a Connection
 $SamAccountName = 'TestUser1'
-$User = New-ADUserConnectionByIdentity -Server $ADConfig.Server  -Identity $SamAccountName -Credential $ADCredential
+$User = New-ADUserConnection -Server $ADConfig.Server  -Identity $SamAccountName -Credential $ADCredential
 
 
 
@@ -24,7 +24,7 @@ if($User.ObjectGuid().ToString() -eq '00000000-0000-0000-00000000000000000'){
 
 
 # Test Setting a Password
-$User.AccountPassword('Password!')
+$User.AccountPassword('Password123!')
 
 # Test getting and removing AccountExpirationDate
 if($User.AccountExpirationDate()){
@@ -75,6 +75,7 @@ if($PropertyCache.GivenName -ne $GivenName){
 
 
 # Memberships
-$User.MemberOfGuids()
-$User.MemberOf(@('DnsUpdateProxy','Key Admins'))
-$User.MemberOf()
+$User.Groups(@())
+$User.Groups().ObjectGUID
+$User.Groups(@('DnsUpdateProxy','Key Admins'))
+$User.Groups()[0]

@@ -244,7 +244,7 @@ class ADUserConnection {
         return $this.ID.ToString()
     }
     
-    [hashtable] Get([string[]]$Properties) {
+    [hashtable] Get([array]$Properties) {
         $Auth = $this.DC.AuthSplat()
         $User = Get-Aduser @Auth -Identity $this.ObjectGuid() -Properties $Properties
         return ConvertTo-Hashtable $User -Include $Properties
@@ -464,34 +464,44 @@ class ADUserConnection {
     Groups([String[]]$NewGroups){
         [guid[]]$NewGroupGuids = @()
         $Auth = $this.DC.AuthSplat()
-        foreach($Group in $NewGroups){
-            $Group = Get-ADGroup @Auth -Identity $this.ObjectGuid()
-            [guid[]]$NewGroupGuids += $Group.ObjectGuid
+        foreach($NewGroup in $NewGroups){
+            try{
+                $Group = Get-ADGroup @Auth -Identity $NewGroup
+            }
+            catch{
+                throw $PSItem
+            }
+            [guid[]]$NewGroupGuids += $Group.ObjectGUID
         }
-        $this.MemberOf($NewGroupGuids)
+        $this.Groups($NewGroupGuids)
     }
     Groups([guid[]]$NewGroupGuids) {
-        $CurrentMemberOf = $this.MemberOfGuids()
-        [system.collections.Arraylist]$AddMemberOfs = @()
-        [system.collections.Arraylist]$RemoveMemberOfs = @()
+        $CurrentGroupGuids = $this.Groups()
+        if(!$NewGroupGuids){
+            if(!$CurrentGroupGuids){return}
+            $this.LeaveGroups($CurrentGroupGuids.ObjectGUID)
+            return
+        }
+        [system.collections.Arraylist]$AddGroupGuids = @()
+        [system.collections.Arraylist]$RemoveGroupGuids = @()
         
         # find memberOf to add
         foreach($Group in $NewGroupGuids){
-            if($CurrentMemberOf -notcontains $Group){
-                $AddMemberOfs.Add($Group)
+            if($CurrentGroupGuids -notcontains $Group){
+                $AddGroupGuids.Add($Group)
             }
         }
-        if($AddMemberOfs){
-            $this.JoinGroups($AddMemberOfs)
+        if($AddGroupGuids){
+            $this.JoinGroups($AddGroupGuids)
         }
         
         # find memberOf to remove
-        foreach($Group in $CurrentMemberOf){
+        foreach($Group in $CurrentGroupGuids){
             if($NewGroupGuids -notcontains $Group){
             }
         }
-        if($RemoveMemberOfs){
-            $this.LeaveGroups($RemoveMemberOfs)
+        if($RemoveGroupGuids){
+            $this.LeaveGroups($RemoveGroupGuids)
         }
     }
     JoinGroups([guid[]]$Groups){
@@ -500,9 +510,11 @@ class ADUserConnection {
     }
     LeaveGroups([guid[]]$Groups){
         $Auth = $this.DC.AuthSplat()
-        Remove-ADPrincipalGroupMembership @Auth -Identity $this.ObjectGuid -MemberOf $Groups -Confirm:$false
+        Remove-ADPrincipalGroupMembership @Auth -Identity $this.ObjectGuid() -MemberOf $Groups -Confirm:$false
     }
-
+    LeaveGroups(){
+        $this.Groups(@())
+    }
     OrganizationalUnit([string]$Identity){
         $Auth = $this.DC.AuthSplat()
         $DN = $this.dc.OrganizationalUnit($Identity).DistinguishedName
