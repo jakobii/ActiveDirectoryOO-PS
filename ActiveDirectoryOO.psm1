@@ -461,22 +461,22 @@ class ADUserConnection {
         $SecurePassword = ConvertTo-SecureString -String $Password -AsPlainText -Force
         $this.AccountPassword($SecurePassword)
     }
-    Groups([String[]]$NewMemberOfIdentities){
-        [guid[]]$NewMemberOf = @()
+    Groups([String[]]$NewGroups){
+        [guid[]]$NewGroupGuids = @()
         $Auth = $this.DC.AuthSplat()
-        foreach($Group in $NewMemberOfIdentities){
+        foreach($Group in $NewGroups){
             $Group = Get-ADGroup @Auth -Identity $this.ObjectGuid()
-            [guid[]]$NewMemberOf += $Group.ObjectGuid
+            [guid[]]$NewGroupGuids += $Group.ObjectGuid
         }
-        $this.MemberOf($NewMemberOf)
+        $this.MemberOf($NewGroupGuids)
     }
-    Groups([guid[]]$NewMemberOf) {
+    Groups([guid[]]$NewGroupGuids) {
         $CurrentMemberOf = $this.MemberOfGuids()
         [system.collections.Arraylist]$AddMemberOfs = @()
         [system.collections.Arraylist]$RemoveMemberOfs = @()
         
         # find memberOf to add
-        foreach($Group in $NewMemberOf){
+        foreach($Group in $NewGroupGuids){
             if($CurrentMemberOf -notcontains $Group){
                 $AddMemberOfs.Add($Group)
             }
@@ -487,7 +487,7 @@ class ADUserConnection {
         
         # find memberOf to remove
         foreach($Group in $CurrentMemberOf){
-            if($NewMemberOf -notcontains $Group){
+            if($NewGroupGuids -notcontains $Group){
             }
         }
         if($RemoveMemberOfs){
